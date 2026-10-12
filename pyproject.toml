@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqslite"
+version = "0.1.0"
+description = "A lightweight HTTP message broker backed by SQLite, featuring SQS-like visibility timeouts."
+authors = [{ name = "Gemini CLI", email = "gemini@example.com" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "aiosqlite>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-aiohttp>=1.0.5",
+]
+
+[project.scripts]
+sqslite = "sqslite.__main__:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
