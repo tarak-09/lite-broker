@@ -1,4 +1,5 @@
 import aiosqlite
+import asyncio
 import time
 import uuid
 import logging
@@ -10,6 +11,13 @@ class Broker:
     def __init__(self, db_path: str = "sqslite.db"):
         self.db_path = db_path
         self._conn: Optional[aiosqlite.Connection] = None
+        self._events: Dict[str, asyncio.Event] = {}
+
+    def _get_event(self, queue_name: str) -> asyncio.Event:
+        if queue_name not in self._events:
+            self._events[queue_name] = asyncio.Event()
+        return self._events[queue_name]
+
 
     async def connect(self):
         logger.info(f"Connecting to database at {self.db_path}")
@@ -53,41 +61,63 @@ class Broker:
             VALUES (?, ?, ?, ?)
         ''', (queue_name, body, now, visible_after))
         await self._conn.commit()
+        
+        event = self._get_event(queue_name)
+        event.set()
+        event.clear()
+        
         return cursor.lastrowid
 
-    async def receive_messages(self, queue_name: str, max_messages: int = 1, visibility_timeout: float = 30.0) -> List[Dict[str, Any]]:
-        now = time.time()
-        new_visible_after = now + visibility_timeout
-        receipt_base = str(uuid.uuid4())
+    async def receive_messages(self, queue_name: str, max_messages: int = 1, visibility_timeout: float = 30.0, wait_time_seconds: float = 0.0) -> List[Dict[str, Any]]:
+        start_time = time.time()
+        deadline = start_time + wait_time_seconds
         
-        query = '''
-            UPDATE messages
-            SET visible_after = ?, receipt_handle = ? || '-' || id
-            WHERE id IN (
-                SELECT id FROM messages 
-                WHERE queue_name = ? AND visible_after <= ?
-                ORDER BY id
-                LIMIT ?
-            )
-            RETURNING id, body, receipt_handle
-        '''
-        
-        try:
-            cursor = await self._conn.execute(
-                query, 
-                (new_visible_after, receipt_base, queue_name, now, max_messages)
-            )
-            rows = await cursor.fetchall()
-            await self._conn.commit()
+        while True:
+            now = time.time()
+            new_visible_after = now + visibility_timeout
+            receipt_base = str(uuid.uuid4())
             
-            return [
-                {"id": row[0], "body": row[1], "receipt_handle": row[2]}
-                for row in rows
-            ]
-        except Exception as e:
-            logger.error(f"Error receiving messages: {e}")
-            await self._conn.rollback()
-            raise
+            query = '''
+                UPDATE messages
+                SET visible_after = ?, receipt_handle = ? || '-' || id
+                WHERE id IN (
+                    SELECT id FROM messages 
+                    WHERE queue_name = ? AND visible_after <= ?
+                    ORDER BY id
+                    LIMIT ?
+                )
+                RETURNING id, body, receipt_handle
+            '''
+            
+            try:
+                cursor = await self._conn.execute(
+                    query, 
+                    (new_visible_after, receipt_base, queue_name, now, max_messages)
+                )
+                rows = await cursor.fetchall()
+                await self._conn.commit()
+                
+                messages = [
+                    {"id": row[0], "body": row[1], "receipt_handle": row[2]}
+                    for row in rows
+                ]
+                
+                if messages or wait_time_seconds <= 0:
+                    return messages
+                    
+                remaining_time = deadline - time.time()
+                if remaining_time <= 0:
+                    return []
+                    
+                event = self._get_event(queue_name)
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=remaining_time)
+                except asyncio.TimeoutError:
+                    return []
+            except Exception as e:
+                logger.error(f"Error receiving messages: {e}")
+                await self._conn.rollback()
+                raise
 
     async def delete_message(self, queue_name: str, receipt_handle: str) -> bool:
         cursor = await self._conn.execute('''

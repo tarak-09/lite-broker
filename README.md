@@ -68,10 +68,10 @@ curl -X POST http://127.0.0.1:8080/queues/myqueue/messages \
 
 **2. Receive a Message**
 
-Receive up to 1 message, making it invisible to other consumers for 30 seconds:
+Receive up to 1 message, making it invisible to other consumers for 30 seconds. You can optionally use HTTP Long Polling by providing `wait_time_seconds` (up to 20 seconds) to block the request until a message arrives:
 
 ```bash
-curl "http://127.0.0.1:8080/queues/myqueue/messages?max_messages=1&visibility_timeout=30"
+curl "http://127.0.0.1:8080/queues/myqueue/messages?max_messages=1&visibility_timeout=30&wait_time_seconds=20"
 ```
 *Output:*
 ```json

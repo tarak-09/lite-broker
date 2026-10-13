@@ -68,3 +68,29 @@ async def test_concurrent_dequeues(temp_db: str):
     finally:
         for b in brokers:
             await b.close()
+
+@pytest.mark.asyncio
+async def test_long_polling_timeout(broker: Broker):
+    import time
+    start = time.time()
+    msgs = await broker.receive_messages("test_lp", wait_time_seconds=0.5)
+    duration = time.time() - start
+    assert len(msgs) == 0
+    assert duration >= 0.5
+    assert duration < 1.0
+
+@pytest.mark.asyncio
+async def test_long_polling_success(broker: Broker):
+    import time
+    import asyncio
+    
+    async def receiver():
+        return await broker.receive_messages("test_lp2", wait_time_seconds=2.0)
+    
+    task = asyncio.create_task(receiver())
+    await asyncio.sleep(0.2)
+    await broker.send_message("test_lp2", "msg1")
+    
+    msgs = await task
+    assert len(msgs) == 1
+    assert msgs[0]["body"] == "msg1"

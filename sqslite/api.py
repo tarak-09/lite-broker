@@ -58,13 +58,17 @@ async def receive_messages(request: web.Request) -> web.Response:
     try:
         max_messages = int(request.query.get('max_messages', 1))
         visibility_timeout = float(request.query.get('visibility_timeout', 30.0))
+        wait_time_seconds = float(request.query.get('wait_time_seconds', 0.0))
     except ValueError:
         return web.json_response({"error": "Invalid query parameters"}, status=400)
         
     if max_messages < 1 or max_messages > 10:
         return web.json_response({"error": "max_messages must be between 1 and 10"}, status=400)
         
-    messages = await broker.receive_messages(queue_name, max_messages, visibility_timeout)
+    if wait_time_seconds < 0 or wait_time_seconds > 20:
+        return web.json_response({"error": "wait_time_seconds must be between 0 and 20"}, status=400)
+        
+    messages = await broker.receive_messages(queue_name, max_messages, visibility_timeout, wait_time_seconds)
     return web.json_response({"messages": messages}, status=200)
 
 async def delete_message(request: web.Request) -> web.Response:

@@ -36,3 +36,22 @@ async def test_api_change_visibility(client):
     resp = await client.get('/queues/visq/messages?max_messages=1')
     data = await resp.json()
     assert len(data["messages"]) == 1
+
+@pytest.mark.asyncio
+async def test_api_long_polling(client):
+    import asyncio
+    
+    async def receive_req():
+        resp = await client.get('/queues/lapiq/messages?max_messages=1&wait_time_seconds=2')
+        assert resp.status == 200
+        return await resp.json()
+        
+    task = asyncio.create_task(receive_req())
+    await asyncio.sleep(0.2)
+    
+    resp = await client.post('/queues/lapiq/messages', json={"body": "lapimsg"})
+    assert resp.status == 201
+    
+    data = await task
+    assert len(data["messages"]) == 1
+    assert data["messages"][0]["body"] == "lapimsg"
