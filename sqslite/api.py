@@ -23,10 +23,35 @@ def create_app(db_path: str = "sqslite.db") -> web.Application:
         web.post('/queues/{queue_name}/messages', send_message),
         web.get('/queues/{queue_name}/messages', receive_messages),
         web.delete('/queues/{queue_name}/messages/{receipt_handle}', delete_message),
-        web.put('/queues/{queue_name}/messages/{receipt_handle}/visibility', change_visibility)
+        web.put('/queues/{queue_name}/messages/{receipt_handle}/visibility', change_visibility),
+        web.put('/queues/{queue_name}/config', set_queue_config)
     ])
     
     return app
+
+async def set_queue_config(request: web.Request) -> web.Response:
+    broker: Broker = request.app['broker']
+    queue_name = request.match_info['queue_name']
+    
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+        
+    dlq_name = data.get('dlq_name')
+    max_receive_count = data.get('max_receive_count')
+    
+    if not isinstance(dlq_name, str) or not dlq_name:
+        return web.json_response({"error": "Missing or invalid 'dlq_name'"}, status=400)
+    if not isinstance(max_receive_count, int) or max_receive_count < 1:
+        return web.json_response({"error": "Missing or invalid 'max_receive_count'"}, status=400)
+        
+    try:
+        await broker.set_queue_config(queue_name, dlq_name, max_receive_count)
+        return web.json_response({"status": "config updated"}, status=200)
+    except Exception as e:
+        logger.exception("Error setting queue config")
+        return web.json_response({"error": "Internal server error"}, status=500)
 
 async def send_message(request: web.Request) -> web.Response:
     broker: Broker = request.app['broker']

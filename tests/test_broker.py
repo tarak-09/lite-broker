@@ -94,3 +94,32 @@ async def test_long_polling_success(broker: Broker):
     msgs = await task
     assert len(msgs) == 1
     assert msgs[0]["body"] == "msg1"
+
+@pytest.mark.asyncio
+async def test_dlq_routing(broker: Broker):
+    await broker.set_queue_config("testq_dlq", "my_dlq", 2)
+    await broker.send_message("testq_dlq", "poison_message")
+    
+    # Receive 1 (count goes 0 -> 1)
+    msgs = await broker.receive_messages("testq_dlq", max_messages=1, visibility_timeout=0.01)
+    assert len(msgs) == 1
+    assert msgs[0]["body"] == "poison_message"
+    
+    await asyncio.sleep(0.02)
+    
+    # Receive 2 (count goes 1 -> 2)
+    msgs2 = await broker.receive_messages("testq_dlq", max_messages=1, visibility_timeout=0.01)
+    assert len(msgs2) == 1
+    assert msgs2[0]["id"] == msgs[0]["id"]
+    
+    await asyncio.sleep(0.02)
+    
+    # Receive 3 (count goes 2 -> 3 > 2), so it should route to DLQ and return empty
+    msgs3 = await broker.receive_messages("testq_dlq", max_messages=1, visibility_timeout=0.01)
+    assert len(msgs3) == 0
+    
+    # Message should be in my_dlq
+    dlq_msgs = await broker.receive_messages("my_dlq", max_messages=1)
+    assert len(dlq_msgs) == 1
+    assert dlq_msgs[0]["body"] == "poison_message"
+    assert dlq_msgs[0]["id"] == msgs[0]["id"]

@@ -38,13 +38,39 @@ class Broker:
                 body TEXT NOT NULL,
                 enqueued_at REAL NOT NULL,
                 visible_after REAL NOT NULL,
-                receipt_handle TEXT
+                receipt_handle TEXT,
+                receive_count INTEGER DEFAULT 0
             )
         ''')
+        
+        # Add receive_count if it doesn't exist (for existing DBs)
+        cursor = await self._conn.execute('PRAGMA table_info(messages)')
+        columns = [row[1] for row in await cursor.fetchall()]
+        if 'receive_count' not in columns:
+            await self._conn.execute('ALTER TABLE messages ADD COLUMN receive_count INTEGER DEFAULT 0')
+
         await self._conn.execute('''
             CREATE INDEX IF NOT EXISTS idx_messages_queue_visibility 
             ON messages (queue_name, visible_after)
         ''')
+        
+        await self._conn.execute('''
+            CREATE TABLE IF NOT EXISTS queues (
+                queue_name TEXT PRIMARY KEY,
+                dlq_name TEXT NOT NULL,
+                max_receive_count INTEGER NOT NULL
+            )
+        ''')
+        await self._conn.commit()
+
+    async def set_queue_config(self, queue_name: str, dlq_name: str, max_receive_count: int):
+        await self._conn.execute('''
+            INSERT INTO queues (queue_name, dlq_name, max_receive_count)
+            VALUES (?, ?, ?)
+            ON CONFLICT(queue_name) DO UPDATE SET
+                dlq_name=excluded.dlq_name,
+                max_receive_count=excluded.max_receive_count
+        ''', (queue_name, dlq_name, max_receive_count))
         await self._conn.commit()
 
     async def send_message(self, queue_name: str, body: str, delay_seconds: float = 0.0) -> int:
@@ -79,28 +105,55 @@ class Broker:
             
             query = '''
                 UPDATE messages
-                SET visible_after = ?, receipt_handle = ? || '-' || id
+                SET 
+                    visible_after = CASE 
+                        WHEN receive_count + 1 > ifnull((SELECT max_receive_count FROM queues WHERE queue_name = messages.queue_name), 999999999) THEN ? 
+                        ELSE ? 
+                    END,
+                    queue_name = CASE
+                        WHEN receive_count + 1 > ifnull((SELECT max_receive_count FROM queues WHERE queue_name = messages.queue_name), 999999999) THEN (SELECT dlq_name FROM queues WHERE queue_name = messages.queue_name)
+                        ELSE queue_name
+                    END,
+                    receipt_handle = CASE
+                        WHEN receive_count + 1 > ifnull((SELECT max_receive_count FROM queues WHERE queue_name = messages.queue_name), 999999999) THEN NULL
+                        ELSE ? || '-' || id
+                    END,
+                    receive_count = CASE
+                        WHEN receive_count + 1 > ifnull((SELECT max_receive_count FROM queues WHERE queue_name = messages.queue_name), 999999999) THEN 0
+                        ELSE receive_count + 1
+                    END
                 WHERE id IN (
                     SELECT id FROM messages 
                     WHERE queue_name = ? AND visible_after <= ?
                     ORDER BY id
                     LIMIT ?
                 )
-                RETURNING id, body, receipt_handle
+                RETURNING id, body, receipt_handle, queue_name
             '''
             
             try:
                 cursor = await self._conn.execute(
                     query, 
-                    (new_visible_after, receipt_base, queue_name, now, max_messages)
+                    (now, new_visible_after, receipt_base, queue_name, now, max_messages)
                 )
                 rows = await cursor.fetchall()
                 await self._conn.commit()
                 
-                messages = [
-                    {"id": row[0], "body": row[1], "receipt_handle": row[2]}
-                    for row in rows
-                ]
+                messages = []
+                dlq_notifications = set()
+                
+                for row in rows:
+                    msg_id, body, receipt_handle, updated_queue_name = row
+                    if updated_queue_name != queue_name:
+                        # Routed to DLQ
+                        dlq_notifications.add(updated_queue_name)
+                    else:
+                        messages.append({"id": msg_id, "body": body, "receipt_handle": receipt_handle})
+                        
+                for dlq_name in dlq_notifications:
+                    event = self._get_event(dlq_name)
+                    event.set()
+                    event.clear()
                 
                 if messages or wait_time_seconds <= 0:
                     return messages

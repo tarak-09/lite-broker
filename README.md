@@ -117,6 +117,22 @@ curl -X DELETE http://127.0.0.1:8080/queues/myqueue/messages/f47ac10b-58cc-4372-
 }
 ```
 
+**5. Configure a Dead Letter Queue (DLQ)**
+
+You can configure a queue to automatically route poison messages (messages that fail to process repeatedly) to a designated Dead Letter Queue. When a message is dequeued more times than the configured `max_receive_count`, it is moved automatically to the DLQ in a single atomic database transaction.
+
+```bash
+curl -X PUT http://127.0.0.1:8080/queues/myqueue/config \
+     -H "Content-Type: application/json" \
+     -d '{"dlq_name": "myqueue-dlq", "max_receive_count": 3}'
+```
+*Output:*
+```json
+{
+  "status": "config updated"
+}
+```
+
 ## Running Tests
 
 SQSLite includes a comprehensive test suite covering the broker logic, the HTTP API, and concurrent atomic dequeues.

@@ -55,3 +55,40 @@ async def test_api_long_polling(client):
     data = await task
     assert len(data["messages"]) == 1
     assert data["messages"][0]["body"] == "lapimsg"
+
+@pytest.mark.asyncio
+async def test_api_dlq_routing(client):
+    # Configure DLQ
+    resp = await client.put('/queues/apiq_dlq/config', json={
+        "dlq_name": "apiq_dlq_dest",
+        "max_receive_count": 2
+    })
+    assert resp.status == 200
+    
+    # Send message
+    await client.post('/queues/apiq_dlq/messages', json={"body": "poison"})
+    
+    # Receive 1 (timeout 0 for fast retry)
+    resp = await client.get('/queues/apiq_dlq/messages?max_messages=1&visibility_timeout=0')
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data["messages"]) == 1
+    
+    # Receive 2
+    resp = await client.get('/queues/apiq_dlq/messages?max_messages=1&visibility_timeout=0')
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data["messages"]) == 1
+    
+    # Receive 3 -> should route to DLQ
+    resp = await client.get('/queues/apiq_dlq/messages?max_messages=1&visibility_timeout=0')
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data["messages"]) == 0
+    
+    # Check DLQ
+    resp = await client.get('/queues/apiq_dlq_dest/messages?max_messages=1')
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data["messages"]) == 1
+    assert data["messages"][0]["body"] == "poison"
