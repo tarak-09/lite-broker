@@ -133,6 +133,31 @@ curl -X PUT http://127.0.0.1:8080/queues/myqueue/config \
 }
 ```
 
+**6. Pub/Sub Topics (Fanout)**
+
+You can create topics, subscribe queues to them, and publish messages to distribute them across multiple queues simultaneously (similar to AWS SNS).
+
+```bash
+# Create a topic
+curl -X PUT http://127.0.0.1:8080/topics/mytopic
+
+# Subscribe queues to the topic
+curl -X PUT http://127.0.0.1:8080/topics/mytopic/subscriptions/myqueue
+curl -X PUT http://127.0.0.1:8080/topics/mytopic/subscriptions/anotherqueue
+
+# Publish a message to the topic
+curl -X POST http://127.0.0.1:8080/topics/mytopic/messages \
+     -H "Content-Type: application/json" \
+     -d '{"body": "Fanout message", "delay_seconds": 0}'
+```
+*Output:*
+```json
+{
+  "status": "published",
+  "published_count": 2
+}
+```
+
 ## Running Tests
 
 SQSLite includes a comprehensive test suite covering the broker logic, the HTTP API, and concurrent atomic dequeues.

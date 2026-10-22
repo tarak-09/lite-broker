@@ -24,6 +24,7 @@ class Broker:
         self._conn = await aiosqlite.connect(self.db_path)
         await self._conn.execute('PRAGMA journal_mode=WAL')
         await self._conn.execute('PRAGMA synchronous=NORMAL')
+        await self._conn.execute('PRAGMA foreign_keys=ON')
         await self._init_db()
 
     async def close(self):
@@ -61,6 +62,21 @@ class Broker:
                 max_receive_count INTEGER NOT NULL
             )
         ''')
+
+        await self._conn.execute('''
+            CREATE TABLE IF NOT EXISTS topics (
+                topic_name TEXT PRIMARY KEY
+            )
+        ''')
+
+        await self._conn.execute('''
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                topic_name TEXT,
+                queue_name TEXT,
+                PRIMARY KEY (topic_name, queue_name),
+                FOREIGN KEY (topic_name) REFERENCES topics(topic_name) ON DELETE CASCADE
+            )
+        ''')
         await self._conn.commit()
 
     async def set_queue_config(self, queue_name: str, dlq_name: str, max_receive_count: int):
@@ -72,6 +88,63 @@ class Broker:
                 max_receive_count=excluded.max_receive_count
         ''', (queue_name, dlq_name, max_receive_count))
         await self._conn.commit()
+
+    async def create_topic(self, topic_name: str):
+        if not isinstance(topic_name, str) or not topic_name:
+            raise ValueError("topic_name must be a non-empty string")
+        await self._conn.execute('''
+            INSERT OR IGNORE INTO topics (topic_name) VALUES (?)
+        ''', (topic_name,))
+        await self._conn.commit()
+
+    async def subscribe(self, topic_name: str, queue_name: str):
+        if not isinstance(topic_name, str) or not topic_name:
+            raise ValueError("topic_name must be a non-empty string")
+        if not isinstance(queue_name, str) or not queue_name:
+            raise ValueError("queue_name must be a non-empty string")
+        
+        # Verify topic exists, though foreign key would also catch it if enabled,
+        # but INSERT OR IGNORE won't throw if it fails foreign key silently or similar.
+        # Actually with foreign keys ON it throws an integrity error if topic_name doesn't exist.
+        try:
+            await self._conn.execute('''
+                INSERT OR IGNORE INTO subscriptions (topic_name, queue_name)
+                VALUES (?, ?)
+            ''', (topic_name, queue_name))
+            await self._conn.commit()
+        except aiosqlite.IntegrityError:
+            raise ValueError(f"Topic '{topic_name}' does not exist")
+
+    async def publish(self, topic_name: str, body: str, delay_seconds: float = 0.0) -> int:
+        if not isinstance(topic_name, str) or not topic_name:
+            raise ValueError("topic_name must be a non-empty string")
+        if not isinstance(body, str):
+            raise ValueError("body must be a string")
+            
+        now = time.time()
+        visible_after = now + delay_seconds
+        
+        cursor = await self._conn.execute('''
+            SELECT queue_name FROM subscriptions WHERE topic_name = ?
+        ''', (topic_name,))
+        queues = [row[0] for row in await cursor.fetchall()]
+        
+        if not queues:
+            return 0
+            
+        published_count = 0
+        for queue_name in queues:
+            await self._conn.execute('''
+                INSERT INTO messages (queue_name, body, enqueued_at, visible_after)
+                VALUES (?, ?, ?, ?)
+            ''', (queue_name, body, now, visible_after))
+            event = self._get_event(queue_name)
+            event.set()
+            event.clear()
+            published_count += 1
+            
+        await self._conn.commit()
+        return published_count
 
     async def send_message(self, queue_name: str, body: str, delay_seconds: float = 0.0) -> int:
         if not isinstance(queue_name, str) or not queue_name:

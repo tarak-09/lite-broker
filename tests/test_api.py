@@ -92,3 +92,35 @@ async def test_api_dlq_routing(client):
     data = await resp.json()
     assert len(data["messages"]) == 1
     assert data["messages"][0]["body"] == "poison"
+
+@pytest.mark.asyncio
+async def test_api_pubsub(client):
+    # Create topic
+    resp = await client.put('/topics/api_topic')
+    assert resp.status == 201
+    
+    # Subscribe queues
+    resp = await client.put('/topics/api_topic/subscriptions/q1')
+    assert resp.status == 200
+    resp = await client.put('/topics/api_topic/subscriptions/q2')
+    assert resp.status == 200
+    
+    # Publish message
+    resp = await client.post('/topics/api_topic/messages', json={"body": "hello_pubsub"})
+    assert resp.status == 201
+    data = await resp.json()
+    assert data["published_count"] == 2
+    
+    # Verify in q1
+    resp = await client.get('/queues/q1/messages?max_messages=1')
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data["messages"]) == 1
+    assert data["messages"][0]["body"] == "hello_pubsub"
+    
+    # Verify in q2
+    resp = await client.get('/queues/q2/messages?max_messages=1')
+    assert resp.status == 200
+    data = await resp.json()
+    assert len(data["messages"]) == 1
+    assert data["messages"][0]["body"] == "hello_pubsub"

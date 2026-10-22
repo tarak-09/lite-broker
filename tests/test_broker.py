@@ -123,3 +123,26 @@ async def test_dlq_routing(broker: Broker):
     assert len(dlq_msgs) == 1
     assert dlq_msgs[0]["body"] == "poison_message"
     assert dlq_msgs[0]["id"] == msgs[0]["id"]
+
+@pytest.mark.asyncio
+async def test_pubsub(broker: Broker):
+    await broker.create_topic("my_topic")
+    await broker.subscribe("my_topic", "queue1")
+    await broker.subscribe("my_topic", "queue2")
+    
+    count = await broker.publish("my_topic", "fanout_msg")
+    assert count == 2
+    
+    msgs1 = await broker.receive_messages("queue1", max_messages=1)
+    assert len(msgs1) == 1
+    assert msgs1[0]["body"] == "fanout_msg"
+    
+    msgs2 = await broker.receive_messages("queue2", max_messages=1)
+    assert len(msgs2) == 1
+    assert msgs2[0]["body"] == "fanout_msg"
+
+@pytest.mark.asyncio
+async def test_pubsub_no_subscribers(broker: Broker):
+    await broker.create_topic("empty_topic")
+    count = await broker.publish("empty_topic", "fanout_msg")
+    assert count == 0

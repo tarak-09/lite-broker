@@ -24,7 +24,10 @@ def create_app(db_path: str = "sqslite.db") -> web.Application:
         web.get('/queues/{queue_name}/messages', receive_messages),
         web.delete('/queues/{queue_name}/messages/{receipt_handle}', delete_message),
         web.put('/queues/{queue_name}/messages/{receipt_handle}/visibility', change_visibility),
-        web.put('/queues/{queue_name}/config', set_queue_config)
+        web.put('/queues/{queue_name}/config', set_queue_config),
+        web.put('/topics/{topic_name}', create_topic),
+        web.put('/topics/{topic_name}/subscriptions/{queue_name}', subscribe),
+        web.post('/topics/{topic_name}/messages', publish_message)
     ])
     
     return app
@@ -123,3 +126,54 @@ async def change_visibility(request: web.Request) -> web.Response:
         return web.json_response({"status": "visibility updated"}, status=200)
     else:
         return web.json_response({"error": "Message not found or receipt handle invalid"}, status=404)
+
+async def create_topic(request: web.Request) -> web.Response:
+    broker: Broker = request.app['broker']
+    topic_name = request.match_info['topic_name']
+    
+    try:
+        await broker.create_topic(topic_name)
+        return web.json_response({"status": "topic created"}, status=201)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.exception("Error creating topic")
+        return web.json_response({"error": "Internal server error"}, status=500)
+
+async def subscribe(request: web.Request) -> web.Response:
+    broker: Broker = request.app['broker']
+    topic_name = request.match_info['topic_name']
+    queue_name = request.match_info['queue_name']
+    
+    try:
+        await broker.subscribe(topic_name, queue_name)
+        return web.json_response({"status": "subscribed"}, status=200)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.exception("Error subscribing queue to topic")
+        return web.json_response({"error": "Internal server error"}, status=500)
+
+async def publish_message(request: web.Request) -> web.Response:
+    broker: Broker = request.app['broker']
+    topic_name = request.match_info['topic_name']
+    
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+        
+    if 'body' not in data:
+        return web.json_response({"error": "Missing 'body' in request"}, status=400)
+        
+    delay_seconds = float(data.get('delay_seconds', 0.0))
+    
+    try:
+        published_count = await broker.publish(topic_name, data['body'], delay_seconds)
+        return web.json_response({"status": "published", "published_count": published_count}, status=201)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        logger.exception("Error publishing message")
+        return web.json_response({"error": "Internal server error"}, status=500)
+
